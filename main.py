@@ -1,192 +1,214 @@
 #!/usr/bin/env python3
-"""Catalogue photograph of an impossible gadget: the PERPETUA phone.
+"""PERPETUA - The Phone That Charges Itself.
 
-A smartphone that charges itself, forever. Its own cable leaves the
-bottom port, loops around, and plugs back into the top of the same phone;
-the screen reads 100% and CHARGING ITSELF. One product, one accessory
-(the cable), clean studio background, soft shadow. Drawn entirely in code,
-deterministic, no network.
+Catalogue photograph of an impossible gadget: a smartphone whose charging
+cable leaves its bottom port, loops down and around, and plugs straight back
+into the top of the same phone. The screen reads 100% / CHARGING ITSELF /
+NO OUTLET. NO END.
+
+Deterministic, no network, no randomness. Drawn at 2x and downscaled.
+Writes /output/entry.png (1024x1024, PNG, <= 1 MiB).
 """
-import math
 import os
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+S = 2            # supersample factor
 W, H = 1024, 1024
+CW, CH = W * S, H * S
 OUT = "/output/entry.png"
 
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-
-def font(path, size):
-    return ImageFont.truetype(path, size)
+def font(size, bold=True):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
 
 
 def lerp(a, b, t):
     return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def vgrad(size, top, bottom):
-    img = Image.new("RGB", size)
-    d = ImageDraw.Draw(img)
-    for y in range(size[1]):
-        d.line([(0, y), (size[0], y)], fill=lerp(top, bottom, y / max(1, size[1] - 1)))
-    return img
+def vertical_gradient(size, top, bottom):
+    w, h = size
+    strip = Image.new("RGB", (1, 256))
+    px = strip.load()
+    for y in range(256):
+        px[0, y] = lerp(top, bottom, y / 255.0)
+    return strip.resize((w, h))
 
 
-def rounded_rect(draw, box, radius, **kw):
-    draw.rounded_rectangle(box, radius=radius, **kw)
-
-
-def bezier(points, n=120):
-    """Cubic bezier through 4 control points, sampled."""
-    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = points
+def catmull_rom(points, samples_per_seg=24):
+    """Dense polyline through points (Catmull-Rom spline)."""
+    pts = [points[0]] + list(points) + [points[-1]]
     out = []
-    for i in range(n + 1):
-        t = i / n
-        mt = 1 - t
-        x = mt**3 * x0 + 3 * mt**2 * t * x1 + 3 * mt * t**2 * x2 + t**3 * x3
-        y = mt**3 * y0 + 3 * mt**2 * t * y1 + 3 * mt * t**2 * y2 + t**3 * y3
-        out.append((x, y))
+    for i in range(len(pts) - 3):
+        p0, p1, p2, p3 = pts[i], pts[i + 1], pts[i + 2], pts[i + 3]
+        for j in range(samples_per_seg):
+            t = j / samples_per_seg
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t
+                       + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                       + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t
+                       + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                       + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            out.append((x, y))
+    out.append(points[-1])
     return out
 
 
-def draw_tracked_text(draw, cx, y, text, fnt, fill, spacing=4):
-    """Centered text with letter spacing."""
-    widths = [draw.textlength(ch, font=fnt) for ch in text]
-    total = sum(widths) + spacing * (len(text) - 1)
+def text_center(draw, cx, y, s, fnt, fill):
+    w = draw.textlength(s, font=fnt)
+    draw.text((cx - w / 2, y), s, font=fnt, fill=fill)
+    return w
+
+
+def spaced_text(draw, cx, y, s, fnt, fill, tracking):
+    """Draw text with extra letter spacing, centred on cx."""
+    widths = [draw.textlength(ch, font=fnt) for ch in s]
+    total = sum(widths) + tracking * (len(s) - 1)
     x = cx - total / 2
-    for ch, w in zip(text, widths):
+    for ch, w in zip(s, widths):
         draw.text((x, y), ch, font=fnt, fill=fill)
-        x += w + spacing
+        x += w + tracking
+    return total
 
 
 def main():
-    # ---- studio background ----
-    img = vgrad((W, H), (247, 245, 242), (228, 224, 218))
-    # soft radial glow behind the product
-    glow = Image.new("L", (W, H), 0)
+    img = vertical_gradient((CW, CH), (247, 245, 241), (226, 222, 216))
+
+    # Soft studio glow behind the phone.
+    glow = Image.new("L", (CW, CH), 0)
     gd = ImageDraw.Draw(glow)
-    gd.ellipse([212, 40, 812, 900], fill=70)
-    glow = glow.filter(ImageFilter.GaussianBlur(120))
-    warm = Image.new("RGB", (W, H), (255, 252, 246))
-    img = Image.composite(warm, img, glow)
+    gd.ellipse([CW * 0.22, CH * 0.05, CW * 0.78, CH * 0.85], fill=90)
+    glow = glow.filter(ImageFilter.GaussianBlur(180))
+    white = Image.new("RGB", (CW, CH), (255, 255, 255))
+    img = Image.composite(white, img, glow.point(lambda v: v // 3))
 
-    # floor line + soft floor shadow
-    d = ImageDraw.Draw(img, "RGBA")
-    d.line([(90, 872), (934, 872)], fill=(190, 184, 176, 160), width=2)
-
-    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    # Floor shadow under the phone.
+    shadow = Image.new("L", (CW, CH), 0)
     sd = ImageDraw.Draw(shadow)
-    sd.ellipse([330, 838, 694, 896], fill=(60, 55, 48, 110))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(14))
-    img = Image.alpha_composite(img.convert("RGBA"), shadow)
+    sd.ellipse([CW * 0.30, CH * 0.78, CW * 0.70, CH * 0.84], fill=110)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(60))
+    dark = Image.new("RGB", (CW, CH), (60, 55, 48))
+    img = Image.composite(dark, img, shadow)
+
     d = ImageDraw.Draw(img, "RGBA")
 
-    # ---- cable (behind phone, drawn first so phone overlaps its ends) ----
-    # path: bottom port -> down -> loop right -> up -> top plug
-    cable_path = (
-        bezier([(512, 806), (512, 900), (640, 926), (742, 872)], 60)
-        + bezier([(742, 872), (828, 824), (836, 640), (800, 470)], 60)
-        + bezier([(800, 470), (770, 330), (700, 190), (606, 122)], 60)
-    )
-    # drop shadow of the cable
-    d.line([(x + 5, y + 6) for x, y in cable_path], fill=(120, 114, 106, 90), width=18, joint="curve")
-    d.line(cable_path, fill=(226, 224, 220, 255), width=17, joint="curve")
-    d.line(cable_path, fill=(176, 172, 166, 255), width=17, joint="curve")
-    # re-draw core white with a thin highlight offset
-    d.line(cable_path, fill=(250, 249, 247, 255), width=12, joint="curve")
-    d.line([(x - 2, y - 3) for x, y in cable_path], fill=(255, 255, 255, 255), width=4, joint="curve")
+    # ---- Phone body -------------------------------------------------
+    px0, py0, px1, py1 = 760, 360, 1288, 1600   # x/y at 2x (380..644, 180..800)
+    d.rounded_rectangle([px0, py0, px1, py1], radius=92, fill=(23, 23, 28))
+    d.rounded_rectangle([px0, py0, px1, py1], radius=92, outline=(70, 70, 78), width=4)
+    # Side button hints.
+    d.rounded_rectangle([px1 - 6, 620, px1 + 8, 760], radius=8, fill=(45, 45, 52))
+    d.rounded_rectangle([px0 - 8, 600, px0 + 6, 700], radius=8, fill=(45, 45, 52))
 
-    # ---- phone body ----
-    body = (352, 118, 672, 802)
-    # outer edge highlight (titanium rim)
-    rounded_rect(d, (348, 114, 676, 806), 50, fill=(88, 90, 96, 255))
-    rounded_rect(d, body, 46, fill=(38, 40, 45, 255))
-    # side button hints
-    rounded_rect(d, (672, 300, 678, 380), 3, fill=(120, 122, 128, 255))
-    rounded_rect(d, (672, 410, 678, 470), 3, fill=(120, 122, 128, 255))
-
-    # screen
-    screen = (368, 134, 656, 786)
-    scr = Image.new("RGB", (screen[2] - screen[0], screen[3] - screen[1]))
-    sd2 = ImageDraw.Draw(scr)
-    for y in range(scr.height):
-        sd2.line([(0, y), (scr.width, y)], fill=lerp((10, 16, 28), (30, 48, 78), y / scr.height))
-    scr_mask = Image.new("L", scr.size, 0)
-    ImageDraw.Draw(scr_mask).rounded_rectangle([0, 0, scr.width - 1, scr.height - 1], radius=34, fill=255)
-    img.paste(scr, (screen[0], screen[1]), scr_mask)
+    # Screen (deep green-black, glowing).
+    sx0, sy0, sx1, sy1 = px0 + 30, py0 + 30, px1 - 30, py1 - 30
+    screen = vertical_gradient((sx1 - sx0, sy1 - sy0), (13, 32, 22), (5, 10, 8))
+    mask = Image.new("L", (sx1 - sx0, sy1 - sy0), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, sx1 - sx0, sy1 - sy0], radius=64, fill=255)
+    img.paste(screen, (sx0, sy0), mask)
     d = ImageDraw.Draw(img, "RGBA")
 
-    # subtle screen sheen (diagonal light)
-    sheen = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    shd = ImageDraw.Draw(sheen)
-    shd.polygon([(368, 786), (560, 134), (640, 134), (448, 786)], fill=(255, 255, 255, 14))
-    img = Image.alpha_composite(img, sheen)
-    d = ImageDraw.Draw(img, "RGBA")
+    cx = (sx0 + sx1) / 2
+    green = (74, 222, 128)
+    soft_green = (134, 239, 172)
+    white = (245, 245, 242)
+    grey = (160, 170, 163)
 
-    cx = 512
-    # brand
-    draw_tracked_text(d, cx, 168, "PERPETUA", font(FONT_BOLD, 26), (168, 178, 196, 255), spacing=8)
-    # battery ring (full = 100%)
-    ring_c = (cx, 420)
-    r = 108
-    d.arc([ring_c[0] - r, ring_c[1] - r, ring_c[0] + r, ring_c[1] + r],
-          start=-90, end=270, fill=(52, 199, 89, 255), width=15)
-    # lightning bolt inside the ring, above the percent
-    bolt = [(cx + 8, 340), (cx - 22, 402), (cx - 2, 402), (cx - 10, 452),
-            (cx + 24, 386), (cx + 2, 386)]
-    d.polygon(bolt, fill=(52, 199, 89, 255))
+    # Status bar: time left, tiny battery right.
+    d.text((sx0 + 34, sy0 + 26), "9:41", font=font(44), fill=white)
+    d.rounded_rectangle([sx1 - 118, sy0 + 34, sx1 - 40, sy0 + 62],
+                        radius=8, outline=white, width=3)
+    d.rounded_rectangle([sx1 - 112, sy0 + 40, sx1 - 46, sy0 + 56],
+                        radius=5, fill=green)
+    d.rectangle([sx1 - 36, sy0 + 42, sx1 - 30, sy0 + 54], fill=white)
+
+    # Brand.
+    spaced_text(d, cx, sy0 + 108, "PERPETUA", font(46), grey, 14)
+
+    # Lightning bolt.
+    bx, by = cx, sy0 + 300
+    bolt = [(bx + 18, by - 92), (bx - 52, by + 18), (bx - 6, by + 18),
+            (bx - 18, by + 92), (bx + 52, by - 18), (bx + 6, by - 18)]
+    d.polygon(bolt, fill=green)
+
     # 100%
-    f_big = font(FONT_BOLD, 66)
-    tw = d.textlength("100%", font=f_big)
-    d.text((cx - tw / 2, 448), "100%", font=f_big, fill=(245, 247, 250, 255))
-    # charging itself (auto-fit inside the screen)
-    _size = 27
-    while _size > 14:
-        _f = font(FONT_BOLD, _size)
-        _w = sum(d.textlength(ch, font=_f) for ch in "CHARGING ITSELF") + 4 * 14
-        if _w <= 258:
-            break
-        _size -= 1
-    draw_tracked_text(d, cx, 552, "CHARGING ITSELF", font(FONT_BOLD, _size), (120, 220, 150, 255), spacing=4)
-    # infinity line
-    f_inf = font(FONT_BOLD, 40)
-    tw = d.textlength("\u221e", font=f_inf)
-    d.text((cx - tw / 2, 606), "\u221e", font=f_inf, fill=(168, 178, 196, 255))
-    draw_tracked_text(d, cx, 668, "NO OUTLET. NO END.", font(FONT_REG, 20), (140, 150, 168, 255), spacing=3)
+    text_center(d, cx, sy0 + 420, "100%", font(145, bold=True), white)
 
-    # ---- cable plugs ----
-    # bottom plug (into the phone's bottom port)
-    rounded_rect(d, (494, 796, 530, 830), 6, fill=(238, 236, 232, 255))
-    d.rectangle([500, 800, 524, 806], fill=(150, 148, 142, 255))
-    # top plug (into the top edge)
-    rounded_rect(d, (588, 92, 624, 122), 6, fill=(238, 236, 232, 255))
-    d.rectangle([594, 116, 618, 122], fill=(150, 148, 142, 255))
-    # green LED glow at both plugs: charging
-    for px, py in ((512, 836), (606, 88)):
-        halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        hd = ImageDraw.Draw(halo)
-        hd.ellipse([px - 16, py - 16, px + 16, py + 16], fill=(52, 199, 89, 90))
-        halo = halo.filter(ImageFilter.GaussianBlur(8))
-        img = Image.alpha_composite(img, halo)
-        d = ImageDraw.Draw(img, "RGBA")
-        d.ellipse([px - 6, py - 6, px + 6, py + 6], fill=(52, 199, 89, 255))
+    # Battery bar: full.
+    bx0, bx1 = cx - 190, cx + 190
+    by0, by1 = sy0 + 660, sy0 + 716
+    d.rounded_rectangle([bx0, by0, bx1, by1], radius=14,
+                        outline=(200, 205, 200), width=5)
+    d.rounded_rectangle([bx0 + 10, by0 + 10, bx1 - 10, by1 - 10],
+                        radius=9, fill=green)
+    d.rounded_rectangle([bx1 + 4, by0 + 16, bx1 + 20, by1 - 16],
+                        radius=6, fill=(200, 205, 200))
 
-    # ---- gentle floor reflection of the phone ----
-    refl = img.crop((352, 118, 672, 802)).transpose(Image.FLIP_TOP_BOTTOM).resize((320, 120))
-    refl = refl.convert("RGBA")
-    alpha = Image.new("L", refl.size, 0)
-    ad = ImageDraw.Draw(alpha)
-    for y in range(refl.height):
-        ad.line([(0, y), (refl.width, y)], fill=int(30 * (1 - y / refl.height)))
-    refl.putalpha(alpha)
-    refl = refl.filter(ImageFilter.GaussianBlur(3))
-    img.paste(refl, (352, 876), refl)
+    # Charging line.
+    text_center(d, cx, sy0 + 770, "CHARGING ITSELF", font(36, bold=True), green)
+    d.line([(cx - 200, sy0 + 880), (cx + 200, sy0 + 880)],
+           fill=(90, 100, 94), width=3)
+    text_center(d, cx, sy0 + 920, "NO OUTLET. NO END.", font(34), soft_green)
 
-    os.makedirs("/output", exist_ok=True)
-    img.convert("RGB").save(OUT, "PNG", optimize=True)
+    # ---- Cable: bottom port -> loop -> top port ----------------------
+    # Ports on the phone.
+    d.rounded_rectangle([1024 - 70, py1 - 8, 1024 + 70, py1 + 14],
+                        radius=10, fill=(8, 8, 10))
+    d.rounded_rectangle([1024 - 70, py0 - 14, 1024 + 70, py0 + 8],
+                        radius=10, fill=(8, 8, 10))
+
+    path = [
+        (1024, 1604), (1024, 1700), (1120, 1770), (1290, 1796),
+        (1408, 1870), (1420, 1970), (1330, 2032), (1120, 2044),
+        (900, 2032), (730, 1970), (648, 1860), (628, 1700),
+        (648, 1480), (650, 1150), (665, 800), (690, 540),
+        (780, 350), (920, 300), (1024, 300), (1024, 352),
+    ]
+    pts = catmull_rom(path)
+    # Sheath, core, specular highlight.
+    d.line(pts, fill=(38, 38, 44), width=46, joint="curve")
+    d.line(pts, fill=(74, 74, 84), width=30, joint="curve")
+    hi = [(x - 7, y - 7) for x, y in pts]
+    d.line(hi, fill=(150, 150, 162), width=7, joint="curve")
+
+    # USB-C plugs at both ends (vertical, metal shell + dark tip).
+    for (ex, ey, flip) in [(1024, 1604, 1), (1024, 352, -1)]:
+        if flip == 1:
+            body = [ex - 34, ey, ex + 34, ey + 96]
+            d.rounded_rectangle(body, radius=14, fill=(198, 202, 210))
+            d.rounded_rectangle([ex - 34, ey, ex + 34, ey + 26],
+                                radius=12, fill=(120, 124, 132))
+        else:
+            body = [ex - 34, ey - 96, ex + 34, ey]
+            d.rounded_rectangle(body, radius=14, fill=(198, 202, 210))
+            d.rounded_rectangle([ex - 34, ey - 26, ex + 34, ey],
+                                radius=12, fill=(120, 124, 132))
+    # Cable collars where it meets the plugs.
+    d.rounded_rectangle([1024 - 26, 1700, 1024 + 26, 1736],
+                        radius=12, fill=(38, 38, 44))
+    d.rounded_rectangle([1024 - 26, 316, 1024 + 26, 352],
+                        radius=12, fill=(38, 38, 44))
+
+    # Downscale to final size and save.
+    final = img.resize((W, H), Image.LANCZOS)
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    final.save(OUT, format="PNG", optimize=True)
     print("wrote", OUT, os.path.getsize(OUT), "bytes")
 
 
